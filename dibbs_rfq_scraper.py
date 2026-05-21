@@ -9,7 +9,6 @@
 ║   • Sort      : newest RFQ date first                                       ║
 ║   • Output    : Excel (.xlsx)  — no login required                          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-
 Usage
 -----
     # Basic run (auto-detects output folder):

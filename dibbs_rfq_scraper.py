@@ -28,7 +28,7 @@ Requirements
 ------------
     pip install requests beautifulsoup4 openpyxl lxml
 """
-
+import logging
 import argparse
 import os
 import re
@@ -45,7 +45,11 @@ from openpyxl.styles import (Alignment, Border, Font, PatternFill, Side)
 from openpyxl.utils import get_column_letter
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-
+logging.basicConfig(
+    filename="dibbs_scraper.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 BASE_URL   = "https://www.dibbs.bsm.dla.mil"
 SEARCH_URL = f"{BASE_URL}/RFQ/RFQList.aspx"
 
@@ -57,8 +61,8 @@ TECH_DOC_MARKER = "*spec/stnd only"
 
 # Mil-spec keywords found in the "Spec/Std" or description columns
 MIL_SPEC_PATTERNS = re.compile(
-    r"mil[-\s]?(spec|std|prf|dtl|a|b|c|d|e|f|g|h|i|j|k|l|m|n|p|q|r|s|t|u|v|w|x|y|z)?[-\s]?\d*",
-    re.IGNORECASE,
+    r"(mil[- ]?(spec|std|dtl|prf)|ansi|asme|sae)",
+    re.IGNORECASE
 )
 
 HEADERS = {
@@ -67,7 +71,11 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+    "Referer": "https://www.google.com/",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 REQUEST_DELAY = 1.5   # seconds between requests — be polite
@@ -139,7 +147,6 @@ def parse_rfq_list_page(html: str, fsc_code: str) -> list[dict]:
     table = (
         soup.find("table", {"id": "rfqList"})
         or soup.find("table", class_=re.compile(r"tablesorter|rfq", re.I))
-        or soup.find("table")          # fallback
     )
     if not table:
         return rows
@@ -183,7 +190,7 @@ def parse_rfq_list_page(html: str, fsc_code: str) -> list[dict]:
             continue
 
         # ── Tech-doc filter: must be exactly "*spec/stnd only" ───────────────
-        if tech_doc_raw.strip().lower() != TECH_DOC_MARKER.lower():
+        if "spec/stnd only" not in tech_doc_raw.lower():
             continue
 
         # ── RFQ detail link ──────────────────────────────────────────────────
@@ -252,9 +259,17 @@ def scrape(max_pages: int) -> list[dict]:
 
         while page <= last_page:
             params = build_search_params(page, fsc)
+            logging.info(f"Scraping FSC {fsc} Page {page}")
             print(f"  Page {page}/{last_page}  params={params}")
-
             resp = safe_get(session, SEARCH_URL, params=params)
+            if "RFQ" not in resp.text:
+    print("[WARNING] RFQ content not found")
+    continue
+            if "captcha" in resp.text.lower():
+    print("[ERROR] CAPTCHA detected!")
+    continue
+            with open(f"debug_{fsc}_{page}.html", "w", encoding="utf-8") as f:
+    f.write(resp.text)
             if resp is None:
                 print(f"  [ERROR] Could not fetch FSC {fsc} page {page}. Skipping.")
                 break
@@ -268,7 +283,7 @@ def scrape(max_pages: int) -> list[dict]:
             new_rows = parse_rfq_list_page(resp.text, fsc)
 
             for row in new_rows:
-                key = row["RFQ No."] or row["NSN"]
+                key = f"{row['RFQ No.']}_{row['NSN']}"
                 if key and key not in seen_rfqs:
                     seen_rfqs.add(key)
                     all_rows.append(row)

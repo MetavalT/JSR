@@ -77,7 +77,7 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-REQUEST_DELAY = 1.5   # seconds between requests — be polite
+REQUEST_DELAY = 3  # seconds between requests — be polite
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -143,37 +143,74 @@ def parse_rfq_list_page(html: str, fsc_code: str) -> list[dict]:
     rows = []
 
     # DIBBS renders results in a table with class 'tablesorter' or id 'rfqList'
-    table = (
-        soup.find("table", {"id": "rfqList"})
-        or soup.find("table", class_=re.compile(r"tablesorter|rfq", re.I))
+  table = soup.find("table")
+
+if not table:
+    return rows
+
+headers = [text(th).lower().strip() for th in table.find_all("th")]
+
+header_map = {
+    name: idx for idx, name in enumerate(headers)
+}
+
+
+def safe_cell(tds, idx, default=""):
+    return text(tds[idx]) if idx < len(tds) else default
+
+
+for tr in tr_list:
+
+    tds = tr.find_all("td")
+
+    if len(tds) < 6:
+        continue
+
+    rfq_no = safe_cell(
+        tds,
+        header_map.get("rfq no.", header_map.get("rfq #", 0))
     )
-    if not table:
-        return rows
 
-    tbody = table.find("tbody") or table
-    tr_list = tbody.find_all("tr", recursive=False)
+    nsn_index = header_map.get("nsn", 1)
+    nsn_el = tds[nsn_index] if nsn_index < len(tds) else None
+    nsn = text(nsn_el)
 
-    for tr in tr_list:
-        tds = tr.find_all("td")
-        if len(tds) < 6:
-            continue
+    item_name = safe_cell(
+        tds,
+        header_map.get("item name", header_map.get("item", 2))
+    )
 
-        # ── Extract raw cell values ──────────────────────────────────────────
-        # Column order on DIBBS RFQ list (public view, as of 2025-2026):
-        #  0: RFQ No.  1: NSN  2: Item Name  3: Qty  4: Unit
-        #  5: Posted Date  6: Response Date  7: Spec/Std  8: Tech Doc
-        # Indices may shift — we also try to detect by header scanning below.
+    qty = safe_cell(
+        tds,
+        header_map.get("qty", 3)
+    )
 
-        rfq_no       = text(tds[0])
-        nsn_el       = tds[1]
-        nsn          = text(nsn_el)
-        item_name    = text(tds[2]) if len(tds) > 2 else ""
-        qty          = text(tds[3]) if len(tds) > 3 else ""
-        unit         = text(tds[4]) if len(tds) > 4 else ""
-        posted_date  = text(tds[5]) if len(tds) > 5 else ""
-        resp_date    = text(tds[6]) if len(tds) > 6 else ""
-        spec_std     = text(tds[7]) if len(tds) > 7 else ""
-        tech_doc_raw = text(tds[8]) if len(tds) > 8 else ""
+    unit = safe_cell(
+        tds,
+        header_map.get("unit", 4)
+    )
+
+    posted_date = safe_cell(
+        tds,
+        header_map.get("posted date", 5)
+    )
+
+    resp_date = safe_cell(
+        tds,
+        header_map.get("response date",
+        header_map.get("close date", 6))
+    )
+
+    spec_std = safe_cell(
+        tds,
+        header_map.get("spec/std",
+        header_map.get("spec / std", 7))
+    )
+
+    tech_doc_raw = safe_cell(
+        tds,
+        header_map.get("tech doc", 8)
+    )
 
         # ── FSC guard: first 4 digits of NSN ────────────────────────────────
         nsn_clean = re.sub(r"[\s\-]", "", nsn)
@@ -261,13 +298,21 @@ def scrape(max_pages: int) -> list[dict]:
             logging.info(f"Scraping FSC {fsc} Page {page}")
             print(f"  Page {page}/{last_page}  params={params}")
             resp = safe_get(session, SEARCH_URL, params=params)
-            if "RFQ" not in resp.text:
+         resp = safe_get(session, SEARCH_URL, params=params)
+
+if resp is None:
+    print(f"  [ERROR] Could not fetch FSC {fsc} page {page}. Skipping.")
+    break
+
+if "RFQ" not in resp.text:
     print("[WARNING] RFQ content not found")
     continue
-            if "captcha" in resp.text.lower():
+
+if "captcha" in resp.text.lower():
     print("[ERROR] CAPTCHA detected!")
     continue
-            with open(f"debug_{fsc}_{page}.html", "w", encoding="utf-8") as f:
+
+with open(f"debug_{fsc}_{page}.html", "w", encoding="utf-8") as f:
     f.write(resp.text)
             if resp is None:
                 print(f"  [ERROR] Could not fetch FSC {fsc} page {page}. Skipping.")
@@ -297,7 +342,11 @@ def scrape(max_pages: int) -> list[dict]:
         print()
 
     # Sort all results newest-first by Posted Date
-    all_rows.sort(key=lambda r: r["Posted Date"], reverse=True)
+  all_rows.sort(
+    key=lambda r: datetime.strptime(r["Posted Date"], "%Y-%m-%d")
+    if r["Posted Date"] else datetime.min,
+    reverse=True
+)
 
     return all_rows
 
